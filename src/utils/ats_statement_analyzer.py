@@ -507,6 +507,65 @@ class ATSFunctions:
         entity_freq_df.columns = ['Entity', 'Frequency (total no of times entity occurred in process_df)']
 
         return entity_freq_df
+
+    def lifo_fifo(self, df):
+        # Sort the DataFrame by Value Date to ensure chronological order
+        df['Value Date'] = pd.to_datetime(df['Value Date'])
+        df = df.sort_values(by='Value Date').reset_index(drop=True)
+    
+        # Define the people involved
+        people = df['Name'].unique()
+    
+        # Initialize a dictionary to store results
+        utilization_dict = {}
+    
+        # Iterate through each person to find relevant credit transactions
+        for person in people:
+            # Filter out credit transactions where the person is receiving money from others in the 'people' list
+            person_df = df[(df['Name'] == person) & (df['Credit'] > 0) & (df['Entity'].isin(people))]
+    
+            # Process each credit transaction for the person
+            for idx, credit_row in person_df.iterrows():
+                credit_date = credit_row['Value Date']
+                credit_amount = credit_row['Credit']
+                credit_entity = credit_row['Entity']
+                
+                # **New Addition**: Find the sender's transactions from a week before the credit transaction
+                sender_history = df[(df['Name'] == credit_entity) &
+                                    (df['Value Date'] >= credit_date - pd.Timedelta(weeks=1)) &
+                                    (df['Value Date'] < credit_date)].reset_index(drop=True)
+    
+                # Filter the recipient's transactions within a week after the credit transaction
+                subsequent_transactions = df[(df['Name'] == person) &
+                                             (df['Value Date'] > credit_date) &
+                                             (df['Value Date'] <= credit_date + pd.Timedelta(weeks=1))].reset_index(drop=True)
+    
+                # Add utilized and remaining credit columns to the DataFrame
+                utilization_df = pd.concat([credit_row.to_frame().T, subsequent_transactions]).reset_index(drop=True)
+                utilization_df['Utilized Credit'] = 0
+                utilization_df['Remaining Credit'] = credit_amount
+    
+                # Track utilized and remaining credit for each subsequent transaction
+                for i in range(1, len(utilization_df)):
+                    row = utilization_df.iloc[i]
+                    if row['Debit'] > 0:
+                        utilization_df.at[i, 'Utilized Credit'] = utilization_df.at[i - 1, 'Utilized Credit'] + row['Debit']
+                        utilization_df.at[i, 'Remaining Credit'] = credit_amount - utilization_df.at[i, 'Utilized Credit']
+                    elif row['Credit'] > 0 and i != 0:
+                        # If another credit transaction occurs, update the remaining credit
+                        credit_amount += row['Credit']
+                        utilization_df.at[i, 'Remaining Credit'] = credit_amount
+    
+                # Create a key for the utilization dictionary entry
+                key = f"Utilization of Credit ({credit_row['Credit']}) received by {person} from {credit_entity} on {credit_date.date()}:"
+    
+                # Store both sender's history and utilization data in the dictionary
+                utilization_dict[key] = {
+                    'LIFO': sender_history[['Value Date', 'Name', 'Description', 'Debit', 'Credit', 'Entity']],
+                    'FIFO': utilization_df[['Value Date', 'Name', 'Description', 'Debit', 'Credit', 'Entity', 'Utilized Credit', 'Remaining Credit']]
+                }
+
+        return utilization_dict
     
 
     def cummalative_person_sheets(self, single_person_output):
@@ -546,8 +605,8 @@ class ATSFunctions:
         unique_names = link_analysis_df['Name'].unique()
         link_analysis_df.loc[link_analysis_df['Entity'].isin(unique_names), 'highlight'] = 1
 
-        #fifo analysis
-        fifo_dictionary = self.fifo_allocation(process_df)
+        #fifo analysis {utizialion sentence: {lifo: lifo_df, fifo: fifo_df}}
+        fifo_dictionary = self.lifo_fifo(process_df)
 
         # fifo_daily.to_excel(BASE_DIR + f"/del/fifo_daily.xlsx", index=False)
         # fifo_weekly.to_excel(BASE_DIR + f"/del/fifo_weekly.xlsx", index=False)
@@ -578,12 +637,5 @@ class ATSFunctions:
             "entity_df":entity_df,
             "link_analysis_df": link_analysis_df,
             "fifo": fifo_dictionary,
-            "fund_flow":{
-                "ff_daily_analysis":ff_daily_analysis,
-                "ff_weekly_analysis":ff_weekly_analysis,
-                "ff_monthly_analysis":ff_monthly_analysis,
-                "ff_half_yearly_analysis":ff_half_yearly_analysis,
-                "ff_yearly_analysis":ff_yearly_analysis,
-            },
             "bidirectional_analysis": bda_all_analysis
         }
